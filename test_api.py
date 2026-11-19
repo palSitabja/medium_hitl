@@ -178,3 +178,22 @@ async def test_resume_workflow_rejection():
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "REJECTED"
+
+@pytest.mark.asyncio
+async def test_concurrent_initiations():
+    """Test connection pool handles 30+ concurrent workflow starts."""
+    import asyncio
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            tasks = []
+            for i in range(35):
+                payload = {"recipient": f"Concurrent-{i}", "amount": 1000.0 + i}
+                tasks.append(client.post("/api/transfer/initiate", json=payload))
+            
+            responses = await asyncio.gather(*tasks)
+            
+            # All should succeed with 202
+            for resp in responses:
+                assert resp.status_code == 202
+                assert "thread_id" in resp.json()
