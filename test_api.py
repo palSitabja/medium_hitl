@@ -105,3 +105,76 @@ async def test_get_pending_reviews():
             # Our thread should be in the list
             thread_ids = [item["thread_id"] for item in data]
             assert thread_id in thread_ids
+
+@pytest.mark.asyncio
+async def test_resume_workflow_approval():
+    import asyncio
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Initiate transfer
+            payload = {"recipient": "ApprovalCorp", "amount": 20000.0}
+            init_response = await client.post("/api/transfer/initiate", json=payload)
+            thread_id = init_response.json()["thread_id"]
+            
+            # Wait for pause
+            await asyncio.sleep(2)
+            
+            # Resume with approval
+            decision = {
+                "action": "approve",
+                "updated_amount": 18000.0,
+                "reviewer": "Finance Director"
+            }
+            response = await client.post(f"/api/reviews/{thread_id}/resume", json=decision)
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert data["thread_id"] == thread_id
+            assert data["status"] == "SETTLED"
+            assert data["final_amount"] == 18000.0
+
+@pytest.mark.asyncio
+async def test_resume_already_completed():
+    import asyncio
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Initiate and immediately try to resume non-paused
+            payload = {"recipient": "CompletedCorp", "amount": 5000.0}
+            init_response = await client.post("/api/transfer/initiate", json=payload)
+            thread_id = init_response.json()["thread_id"]
+            
+            await asyncio.sleep(2)
+            
+            # Resume once
+            decision = {"action": "approve", "updated_amount": 5000.0, "reviewer": "Manager"}
+            await client.post(f"/api/reviews/{thread_id}/resume", json=decision)
+
+            # Try to resume again
+            response = await client.post(f"/api/reviews/{thread_id}/resume", json=decision)
+            assert response.status_code == 400
+            assert "not waiting" in response.json()["detail"].lower()
+
+@pytest.mark.asyncio
+async def test_resume_workflow_rejection():
+    import asyncio
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            payload = {"recipient": "RejectCorp", "amount": 50000.0}
+            init_response = await client.post("/api/transfer/initiate", json=payload)
+            thread_id = init_response.json()["thread_id"]
+            
+            await asyncio.sleep(2)
+            
+            decision = {
+                "action": "reject",
+                "reason": "Exceeds budget",
+                "reviewer": "CFO"
+            }
+            response = await client.post(f"/api/reviews/{thread_id}/resume", json=decision)
+            
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "REJECTED"

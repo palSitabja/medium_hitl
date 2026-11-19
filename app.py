@@ -160,3 +160,40 @@ async def get_review_details(thread_id: str):
         review_payload=interrupt_payload,
         current_state=snapshot.values
     )
+
+@app.post("/api/reviews/{thread_id}/resume")
+async def resume_workflow(thread_id: str, decision: ReviewDecision):
+    from langgraph.types import Command
+    
+    graph = _graph
+    config = {"configurable": {"thread_id": thread_id}}
+    
+    # Verify thread is paused
+    try:
+        snapshot = await graph.aget_state(config)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    
+    if not snapshot.next:
+        raise HTTPException(status_code=400, detail="Thread is not waiting for approval")
+    
+    # Package resume payload
+    resume_payload = {
+        "action": decision.action,
+        "updated_amount": decision.updated_amount,
+        "reason": decision.reason,
+        "reviewer": decision.reviewer
+    }
+    
+    # Resume execution
+    async for _ in graph.astream(Command(resume=resume_payload), config=config):
+        pass
+    
+    # Return final state
+    final_snapshot = await graph.aget_state(config)
+    return {
+        "thread_id": thread_id,
+        "status": final_snapshot.values.get("action_status"),
+        "final_amount": final_snapshot.values.get("amount"),
+        "recipient": final_snapshot.values.get("recipient")
+    }
