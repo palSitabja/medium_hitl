@@ -1,10 +1,12 @@
 import os
+import uuid
 from contextlib import asynccontextmanager
 from typing import Literal
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks, status
 from pydantic import BaseModel
 from psycopg_pool import AsyncConnectionPool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langchain_core.messages import HumanMessage
 from dotenv import load_dotenv
 from workflow import get_workflow_builder
 
@@ -12,6 +14,10 @@ load_dotenv()
 
 DEFAULT_DB_URI = "postgresql://research:root@localhost:5432/langgraph_hitl?sslmode=disable"
 DB_URI = os.getenv("POSTGRES_DB_URI", DEFAULT_DB_URI)
+
+# Global state for graph and pool
+_graph = None
+_pool = None
 
 class TransferRequest(BaseModel):
     recipient: str
@@ -36,24 +42,48 @@ class ReviewDetailResponse(BaseModel):
     review_payload: dict | None = None
     current_state: dict | None = None
 
+async def run_agent_workflow(graph, thread_id: str, payload: dict):
+    """Runs workflow in background until completion or interrupt."""
+    config = {"configurable": {"thread_id": thread_id}}
+    async for _ in graph.astream(payload, config=config):
+        pass
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _graph, _pool
     # Startup: Initialize DB pool and compile graph
-    pool = AsyncConnectionPool(conninfo=DB_URI, max_size=20, kwargs={"autocommit": True})
-    await pool.open()
+    _pool = AsyncConnectionPool(conninfo=DB_URI, max_size=20, kwargs={"autocommit": True})
+    await _pool.open()
 
-    checkpointer = AsyncPostgresSaver(pool)
+    checkpointer = AsyncPostgresSaver(_pool)
     await checkpointer.setup()
 
     builder = get_workflow_builder()
-    graph = builder.compile(checkpointer=checkpointer)
-
-    app.state.graph = graph
-    app.state.pool = pool
+    _graph = builder.compile(checkpointer=checkpointer)
 
     yield
 
     # Shutdown: Close pool
-    await pool.close()
+    await _pool.close()
 
 app = FastAPI(title="LangGraph HITL Service", lifespan=lifespan)
+
+@app.post("/api/transfer/initiate", status_code=status.HTTP_202_ACCEPTED, response_model=TransferResponse)
+async def initiate_transfer(request: TransferRequest, background_tasks: BackgroundTasks):
+    thread_id = f"tx-{uuid.uuid4().hex[:8]}"
+
+    initial_payload = {
+        "recipient": request.recipient,
+        "amount": request.amount,
+        "currency": request.currency,
+        "action_status": "INITIALIZED",
+        "messages": [HumanMessage(content=f"Wire ${request.amount} {request.currency} to {request.recipient}")]
+    }
+
+    background_tasks.add_task(run_agent_workflow, _graph, thread_id, initial_payload)
+
+    return TransferResponse(
+        thread_id=thread_id,
+        status="PROCESSING",
+        message="Workflow started in background"
+    )
