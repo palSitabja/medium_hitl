@@ -19,7 +19,7 @@ async def run_full_demo():
     await inspect_thread(thread_id=test_thread_id)
 
     print(">>> Simulating 2 days passing / process restart... <<<\n")
-    await asyncio.sleep(1)
+    await asyncio.sleep(5)
 
     # Step 2: Fresh worker connects and resumes
     await resume_transaction(thread_id=test_thread_id, action="approve", updated_amount=19500.0)
