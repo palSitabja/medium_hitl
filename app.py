@@ -88,6 +88,44 @@ async def initiate_transfer(request: TransferRequest, background_tasks: Backgrou
         message="Workflow started in background"
     )
 
+@app.get("/api/reviews/pending")
+async def get_pending_reviews():
+    pool = _pool
+    graph = _graph
+
+    # Query recent thread_ids from checkpoints table
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+                SELECT thread_id, MAX(checkpoint_id) as max_checkpoint
+                FROM checkpoints
+                GROUP BY thread_id
+                ORDER BY max_checkpoint DESC
+                LIMIT 50
+            """)
+            rows = await cur.fetchall()
+
+    pending = []
+    for row in rows:
+        thread_id = row[0]
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            snapshot = await graph.aget_state(config)
+            if snapshot.next and "human_approval_gate" in snapshot.next:
+                interrupt_payload = None
+                if snapshot.tasks and snapshot.tasks[0].interrupts:
+                    interrupt_payload = snapshot.tasks[0].interrupts[0].value
+
+                pending.append({
+                    "thread_id": thread_id,
+                    "paused_at_node": list(snapshot.next),
+                    "review_payload": interrupt_payload
+                })
+        except Exception:
+            continue
+
+    return pending
+
 @app.get("/api/reviews/{thread_id}", response_model=ReviewDetailResponse)
 async def get_review_details(thread_id: str):
     graph = _graph

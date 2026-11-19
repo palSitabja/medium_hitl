@@ -82,3 +82,26 @@ async def test_get_review_nonexistent_thread():
             response = await client.get("/api/reviews/tx-nonexist")
             assert response.status_code == 404
             assert "not found" in response.json()["detail"].lower()
+
+@pytest.mark.asyncio
+async def test_get_pending_reviews():
+    import asyncio
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            # Initiate a transfer
+            payload = {"recipient": "PendingCorp", "amount": 15000.0}
+            init_response = await client.post("/api/transfer/initiate", json=payload)
+            thread_id = init_response.json()["thread_id"]
+            
+            # Wait for it to pause
+            await asyncio.sleep(2)
+            
+            # Fetch pending list
+            response = await client.get("/api/reviews/pending")
+            assert response.status_code == 200
+            data = response.json()
+            assert isinstance(data, list)
+            # Our thread should be in the list
+            thread_ids = [item["thread_id"] for item in data]
+            assert thread_id in thread_ids
